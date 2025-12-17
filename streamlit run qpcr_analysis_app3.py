@@ -8,6 +8,16 @@ import io
 import json
 from datetime import datetime
 from typing import Dict, List, Tuple
+import re 
+
+# ==================== UTILITY FUNCTIONS ====================
+def natural_sort_key(sample_name: str) -> List:
+    """
+    Natural sorting for sample names
+    Example: Sample 1, Sample 2, Sample 10 (not Sample 1, Sample 10, Sample 2)
+    """
+    parts = re.split(r'(\d+)', str(sample_name))
+    return [int(part) if part.isdigit() else part.lower() for part in parts]
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(page_title="qPCR Analysis Suite Pro", layout="wide", initial_sidebar_state="expanded")
@@ -170,23 +180,111 @@ class QPCRParser:
     
     @staticmethod
     def parse(file):
+        file_name = getattr(file, 'name', 'unknown_file')
+        
         try:
             df = None
+            last_error = None
+            
+            # Try different encodings
             for enc in ['utf-8', 'latin-1', 'cp1252']:
                 try:
+                    file.seek(0)  # Reset file pointer
                     df = pd.read_csv(file, encoding=enc, low_memory=False, skip_blank_lines=False)
                     break
-                except UnicodeDecodeError:
+                except UnicodeDecodeError as e:
+                    last_error = e
                     continue
+                except pd.errors.ParserError as e:
+                    st.error(f"❌ CSV parsing error in {file_name}: {str(e)}")
+                    return None
             
             if df is None:
+                st.error(f"❌ Could not decode {file_name}. Tried encodings: utf-8, latin-1, cp1252")
+                if last_error:
+                    st.caption(f"Last error: {str(last_error)}")
                 return None
             
+            # Detect format
             fmt, start = QPCRParser.detect_format(df)
-            return QPCRParser.parse_format1(df, start) if fmt == 'format1' else QPCRParser.parse_format2(df, start) if fmt == 'format2' else None
+            
+            if fmt == 'unknown':
+                st.error(f"❌ Unrecognized format in {file_name}. Expected qPCR export with 'Well', 'Sample Name', 'Target Name', 'CT' columns.")
+                with st.expander("Show first 10 rows"):
+                    st.dataframe(df.head(10))
+                return None
+            
+            # Parse based on format
+            if fmt == 'format1':
+                parsed = QPCRParser.parse_format1(df, start)
+            elif fmt == 'format2':
+                parsed = QPCRParser.parse_format2(df, start)
+            else:
+                return None
+            
+            if parsed is None or parsed.empty:
+                st.error(f"❌ No valid data found in {file_name} after parsing")
+                return None
+            
+            return parsed
+            
         except Exception as e:
-            st.error(f"Parse error: {e}")
+            st.error(f"❌ Unexpected error parsing {file_name}: {type(e).__name__}")
+            with st.expander("Show error details"):
+                st.exception(e)
             return None
+
+# ==================== DATA VALIDATOR ====================
+class DataValidator:
+    """Validate parsed qPCR data quality"""
+    
+    @staticmethod
+    def validate_parsed_data(df: pd.DataFrame) -> Tuple[bool, List[str]]:
+        """
+        Validate parsed qPCR data
+        Returns: (is_valid, list_of_warnings)
+        """
+        warnings = []
+        
+        # Check required columns
+        required = ['Well', 'Sample', 'Target', 'CT']
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            warnings.append(f"❌ Missing required columns: {', '.join(missing)}")
+            return False, warnings
+        
+        # Check CT value ranges
+        if 'CT' in df.columns:
+            invalid_ct = df[(df['CT'] < 0) | (df['CT'] > 45)]
+            if len(invalid_ct) > 0:
+                warnings.append(f"⚠️ {len(invalid_ct)} CT values outside typical range (0-45)")
+                with st.expander("Show problematic CT values"):
+                    st.dataframe(invalid_ct[['Well', 'Sample', 'Target', 'CT']])
+        
+        # Check for duplicate wells
+        duplicates = df[df.duplicated(['Well', 'Target'], keep=False)]
+        if len(duplicates) > 0:
+            warnings.append(f"⚠️ {len(duplicates)} duplicate well+target combinations detected")
+            with st.expander("Show duplicates"):
+                st.dataframe(duplicates.sort_values(['Well', 'Target']))
+        
+        # Check for single replicates
+        counts = df.groupby(['Sample', 'Target']).size()
+        single_reps = counts[counts == 1]
+        if len(single_reps) > 0:
+            warnings.append(f"⚠️ {len(single_reps)} sample-gene pairs have only 1 replicate (low reliability)")
+        
+        # Check for missing samples
+        empty_samples = df[df['Sample'].isna() | (df['Sample'] == '')]
+        if len(empty_samples) > 0:
+            warnings.append(f"⚠️ {len(empty_samples)} wells have missing sample names")
+        
+        # Check for missing targets
+        empty_targets = df[df['Target'].isna() | (df['Target'] == '')]
+        if len(empty_targets) > 0:
+            warnings.append(f"⚠️ {len(empty_targets)} wells have missing target names")
+        
+        return True, warnings
 
 # ==================== UPDATED ANALYSIS ENGINE ====================
 class AnalysisEngine:
@@ -294,51 +392,45 @@ class AnalysisEngine:
         results["p_value_2"] = np.nan
         results["significance_2"] = ""
         
+        # PRE-COMPUTE: Map all conditions once
+        raw_data_mapped = raw_data.copy()
+        raw_data_mapped["Condition"] = raw_data_mapped["Sample"].map(
+            lambda s: sample_mapping.get(s, {}).get("condition", s)
+        )
+
+        # PRE-COMPUTE: Group housekeeping data once
+        hk_data = raw_data_mapped[raw_data_mapped["Target"] == hk_gene]
+        hk_means = hk_data.groupby("Condition")["CT"].mean().to_dict()
+
+        # PRE-COMPUTE: Group target data once
+        target_grouped = raw_data_mapped.groupby(["Target", "Condition"])["CT"].apply(list).to_dict()
+
         for target in results["Target"].unique():
             if pd.isna(target):
                 continue
             
-            # Map conditions
-            t_rows = raw_data[raw_data["Target"] == target].copy()
-            if t_rows.empty:
-                continue
-            
-            t_rows["Condition"] = t_rows["Sample"].map(
-                lambda s: sample_mapping.get(s, {}).get("condition", s)
-            )
-            
-            hk_rows = raw_data[raw_data["Target"] == hk_gene].copy()
-            hk_rows["Condition"] = hk_rows["Sample"].map(
-                lambda s: sample_mapping.get(s, {}).get("condition", s)
-            )
-            hk_means = hk_rows.groupby("Condition")["CT"].mean().to_dict()
-            
-            # Calculate relative expression per condition
+            # Calculate relative expression per condition using pre-computed groups
             rel_expr = {}
-            for cond, grp in t_rows.groupby("Condition"):
+            for cond in results[results["Target"] == target]["Condition"].unique():
                 hk_mean = hk_means.get(cond, np.nan)
                 if np.isnan(hk_mean):
                     continue
-                rel_expr[cond] = 2 ** (-(grp["CT"].values - hk_mean))
-            
-            # PRIMARY COMPARISON (stars *)
+                
+                target_ct_values = target_grouped.get((target, cond), [])
+                if not target_ct_values:
+                    continue
+                
+                rel_expr[cond] = 2 ** (-(np.array(target_ct_values) - hk_mean))
+ 
+            # PRIMARY COMPARISON (stars *) - Use helper method
             ref_vals = rel_expr.get(compare_condition, np.array([]))
             if ref_vals.size >= 1:
                 for cond, vals in rel_expr.items():
                     if cond == compare_condition or vals.size == 0:
                         continue
                     
-                    try:
-                        if ref_vals.size >= 2 and vals.size >= 2:
-                            _, p_val = stats.ttest_ind(ref_vals, vals, equal_var=False)
-                        elif vals.size == 1 and ref_vals.size >= 2:
-                            _, p_val = stats.ttest_1samp(ref_vals, vals[0])
-                        elif ref_vals.size == 1 and vals.size >= 2:
-                            _, p_val = stats.ttest_1samp(vals, ref_vals[0])
-                        else:
-                            p_val = np.nan
-                    except:
-                        p_val = np.nan
+                    # Use the existing _calculate_p_value method (already defined in your code)
+                    p_val = AnalysisEngine._calculate_p_value(ref_vals, vals)
                     
                     mask = (results["Target"] == target) & (results["Condition"] == cond)
                     results.loc[mask, "p_value"] = p_val
@@ -351,36 +443,26 @@ class AnalysisEngine:
                         elif p_val < 0.05:
                             results.loc[mask, "significance"] = "*"
             
-            # SECONDARY COMPARISON (hashes #) - Only if compare_condition_2 provided
-            if compare_condition_2 is not None:
-                ref_vals_2 = rel_expr.get(compare_condition_2, np.array([]))
-                if ref_vals_2.size >= 1:
-                    for cond, vals in rel_expr.items():
-                        if cond == compare_condition_2 or vals.size == 0:
-                            continue
+            # PRIMARY COMPARISON (stars *) - Use helper method
+            ref_vals = rel_expr.get(compare_condition, np.array([]))
+            if ref_vals.size >= 1:
+                for cond, vals in rel_expr.items():
+                    if cond == compare_condition or vals.size == 0:
+                        continue
+                    
+                    # Use the existing _calculate_p_value method (already defined in your code)
+                    p_val_2= AnalysisEngine._calculate_p_value(ref_vals, vals)
                         
-                        try:
-                            if ref_vals_2.size >= 2 and vals.size >= 2:
-                                _, p_val_2 = stats.ttest_ind(ref_vals_2, vals, equal_var=False)
-                            elif vals.size == 1 and ref_vals_2.size >= 2:
-                                _, p_val_2 = stats.ttest_1samp(ref_vals_2, vals[0])
-                            elif ref_vals_2.size == 1 and vals.size >= 2:
-                                _, p_val_2 = stats.ttest_1samp(vals, ref_vals_2[0])
-                            else:
-                                p_val_2 = np.nan
-                        except:
-                            p_val_2 = np.nan
-                        
-                        mask = (results["Target"] == target) & (results["Condition"] == cond)
-                        results.loc[mask, "p_value_2"] = p_val_2
-                        
-                        if not np.isnan(p_val_2):
-                            if p_val_2 < 0.001:
-                                results.loc[mask, "significance_2"] = "###"
-                            elif p_val_2 < 0.01:
-                                results.loc[mask, "significance_2"] = "##"
-                            elif p_val_2 < 0.05:
-                                results.loc[mask, "significance_2"] = "#"
+                    mask = (results["Target"] == target) & (results["Condition"] == cond)
+                    results.loc[mask, "p_value_2"] = p_val_2
+                    
+                    if not np.isnan(p_val_2):
+                        if p_val_2 < 0.001:
+                            results.loc[mask, "significance_2"] = "###"
+                        elif p_val_2 < 0.01:
+                            results.loc[mask, "significance_2"] = "##"
+                        elif p_val_2 < 0.05:
+                            results.loc[mask, "significance_2"] = "#"
         
         return results
     
@@ -388,10 +470,15 @@ class AnalysisEngine:
     def run_full_analysis(ref_sample_key: str, compare_sample_key: str, compare_sample_key_2: str = None):
         """
         Run ΔΔCt + dual statistical analysis.
-        compare_sample_key: Primary p-value reference (stars)
-        compare_sample_key_2: Secondary p-value reference (hashes) - optional
         """
+        # Create progress indicators
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
         try:
+            status_text.text("🔍 Loading data...")
+            progress_bar.progress(0.1)
+            
             data = st.session_state.get("data")
             mapping = st.session_state.get("sample_mapping", {})
             hk_gene = st.session_state.get("hk_gene")
@@ -412,6 +499,9 @@ class AnalysisEngine:
 
             with st.spinner(f"Running full analysis..."):
                 # ΔΔCt calculation
+                status_text.text("🧬 Calculating ΔΔCt values...")
+                progress_bar.progress(0.3)
+                
                 processed_df = AnalysisEngine.calculate_ddct(
                     data,
                     hk_gene,
@@ -427,6 +517,9 @@ class AnalysisEngine:
                     return False
 
                 # Statistical test with dual comparisons
+                status_text.text("📊 Running statistical tests...")
+                progress_bar.progress(0.6)
+                
                 processed_with_stats = AnalysisEngine.calculate_statistics(
                     processed_df,
                     cmp_condition,
@@ -437,6 +530,9 @@ class AnalysisEngine:
                 )
 
                 # Organize data for graphs
+                status_text.text("📦 Organizing results...")
+                progress_bar.progress(0.9)
+                
                 gene_dict = {}
                 if "Target" in processed_with_stats.columns:
                     for gene in processed_with_stats["Target"].unique():
@@ -446,11 +542,22 @@ class AnalysisEngine:
                     gene_dict = {"results": processed_with_stats.reset_index(drop=True)}
 
                 st.session_state.processed_data = gene_dict
+                
+                progress_bar.progress(1.0)
+                status_text.text("✅ Complete!")
 
+                # Clean up progress indicators after a brief pause
+                import time
+                time.sleep(0.8)
+                progress_bar.empty()
+                status_text.empty()
+                
             st.success("✅ Full analysis complete.")
             return True
 
         except Exception as e:
+            progress_bar.empty()
+            status_text.empty()
             st.error(f"❌ Analysis failed: {e}")
             return False
 
@@ -859,35 +966,21 @@ with tab1:
                 st.success(f"✅ {file.name}: {len(parsed)} wells")
         
             if all_data:
-                st.session_state.data = pd.concat(all_data, ignore_index=True)
+                combined_df = pd.concat(all_data, ignore_index=True)
                 
-                # Natural numerical sort function
-                import re
-                def natural_sort_key(sample_name):
-                    """Sort samples naturally: Sample 1, Sample 2, Sample 10 (not Sample 1, Sample 10, Sample 2)"""
-                    parts = re.split(r'(\d+)', str(sample_name))
-                    return [int(part) if part.isdigit() else part.lower() for part in parts]
+                # Validate data quality
+                is_valid, validation_warnings = DataValidator.validate_parsed_data(combined_df)
                 
-                # Get unique samples and sort naturally
-                unique_samples = sorted(
-                    st.session_state.data['Sample'].unique(),
-                    key=natural_sort_key
-                )
+                if validation_warnings:
+                    st.warning("⚠️ Data Quality Checks:")
+                    for warning in validation_warnings:
+                        st.warning(warning)
                 
-                # Initialize sample_order with naturally sorted samples
-                st.session_state.sample_order = list(unique_samples)
-                
-                # Force flag to prevent re-initialization in TAB 2
-                st.session_state.order_initialized = True
-            
-            # Natural sort samples by extracting numbers
-            import re
-            def natural_sort_key(sample_name):
-                """Extract numbers from sample name for natural sorting"""
-                # Convert to string and extract all numbers
-                parts = re.split(r'(\d+)', str(sample_name))
-                # Convert numeric parts to integers for proper sorting
-                return [int(part) if part.isdigit() else part.lower() for part in parts]
+                if is_valid:
+                    st.session_state.data = combined_df
+                else:
+                    st.error("❌ Critical validation errors found. Please fix and re-upload.")
+                    st.stop()
             
             # Get unique samples and sort them naturally
             unique_samples = sorted(
@@ -917,7 +1010,7 @@ with tab1:
 # ==================== TAB 2: SAMPLE MAPPING ====================
 with tab2:
     st.header("Step 2: Map Samples to Conditions")
-    
+        
     if st.session_state.data is not None:
         # Efficacy type selection
         detected_genes = set(st.session_state.data['Target'].unique())
@@ -949,13 +1042,7 @@ with tab2:
         
         # CRITICAL FIX: Only initialize sample_order ONCE, never reinitialize
         if 'sample_order' not in st.session_state or st.session_state.sample_order is None:
-            import re
-            def natural_sort_key(sample_name):
-                """Natural numerical sorting: Sample 1, Sample 2, Sample 10 (not Sample 1, Sample 10, Sample 2)"""
-                parts = re.split(r'(\d+)', str(sample_name))
-                return [int(part) if part.isdigit() else part.lower() for part in parts]
-            
-            # Get unique samples and sort naturally
+            # Get unique samples and sort naturally (using global function)
             unique_samples = sorted(
                 st.session_state.data['Sample'].unique(),
                 key=natural_sort_key
@@ -1007,6 +1094,34 @@ with tab2:
             # Clear the action and rerun
             st.session_state.move_action = None
             st.rerun()
+        # Search and filter functionality
+        col_search, col_count = st.columns([3, 1])
+
+        with col_search:
+            search_term = st.text_input(
+                "🔍 Search samples",
+                placeholder="Filter by sample name or condition...",
+                key="sample_search"
+            )
+
+        # Filter samples based on search
+        if search_term:
+            filtered_samples = [
+                s for s in st.session_state.sample_order 
+                if search_term.lower() in s.lower() or 
+                search_term.lower() in st.session_state.sample_mapping.get(s, {}).get('condition', '').lower()
+            ]
+        else:
+            filtered_samples = st.session_state.sample_order
+
+        with col_count:
+            st.metric(
+                "Showing",
+                f"{len(filtered_samples)}/{len(st.session_state.sample_order)}",
+                delta=None
+            )
+
+        st.markdown("---")
         
         # Header row with styled background
         st.markdown("""
@@ -1025,7 +1140,9 @@ with tab2:
         """, unsafe_allow_html=True)
         
         # Sample rows - USING sample_order (this is what gets passed to graphs!)
-        for i, sample in enumerate(st.session_state.sample_order):
+        for i, sample in enumerate(filtered_samples):
+            # Get actual index in full sample_order for move buttons
+            actual_index = st.session_state.sample_order.index(sample)
             with st.container():
                 col0, col_order, col1, col2, col3, col_move = st.columns([0.5, 0.8, 1.5, 2.5, 2, 1])
                 
@@ -1075,28 +1192,32 @@ with tab2:
                     )
                     st.session_state.sample_mapping[sample]['group'] = grp
                 
-                # CRITICAL FIX: Move buttons with on_click callback
+                # FIXED: Move buttons with proper callback
                 with col_move:
                     move_col1, move_col2 = st.columns(2)
                     with move_col1:
-                        if i > 0:
-                            # Use on_click to set action before rerun
+                        if actual_index > 0:
+                            def move_up():
+                                st.session_state.move_action = ('up', sample)
+                            
                             st.button(
                                 "⬆", 
                                 key=f"btn_up_{sample}_{i}", 
                                 help="Move up",
                                 use_container_width=True,
-                                on_click=lambda s=sample: setattr(st.session_state, 'move_action', ('up', s))
+                                on_click=move_up
                             )
                     with move_col2:
                         if i < len(st.session_state.sample_order) - 1:
-                            # Use on_click to set action before rerun
+                            def move_down():
+                                st.session_state.move_action = ('down', sample)
+                            
                             st.button(
                                 "⬇", 
                                 key=f"btn_down_{sample}_{i}", 
                                 help="Move down",
                                 use_container_width=True,
-                                on_click=lambda s=sample: setattr(st.session_state, 'move_action', ('down', s))
+                                on_click=move_down
                             )
                 
                 # Divider line
@@ -1579,9 +1700,16 @@ with tab4:
                 
                 # Display the graph
                 st.plotly_chart(fig, use_container_width=True, key=f"fig_{gene}")
-                
-                # Store graph in session state for export
-                st.session_state.graphs[gene] = fig
+
+                # Store lightweight graph configuration instead of full figure
+                if 'graph_configs' not in st.session_state:
+                    st.session_state.graph_configs = {}
+
+                st.session_state.graph_configs[gene] = {
+                    'data_records': gene_data.to_dict('records'),
+                    'settings': current_settings.copy(),
+                    'sample_order': st.session_state.get('sample_order')
+                }
     else:
         st.info("⏳ No analysis results yet. Go to 'Sample Mapping' tab and click 'Run Full Analysis Now'")
     
@@ -1629,16 +1757,26 @@ with tab5:
             st.markdown("### 📈 All Graphs (HTML)")
             st.caption("Interactive graphs for all genes in one file")
             
-            if st.session_state.graphs:
-                # Create combined HTML
-                html_parts = ["<html><head><title>qPCR Analysis Graphs</title></head><body>"]
-                html_parts.append(f"<h1>{st.session_state.selected_efficacy} Analysis</h1>")
-                html_parts.append(f"<p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>")
+        if st.session_state.get('graph_configs'):
+            # Regenerate graphs from lightweight configs
+            html_parts = ["<html><head><title>qPCR Analysis Graphs</title></head><body>"]
+            html_parts.append(f"<h1>{st.session_state.selected_efficacy} Analysis</h1>")
+            html_parts.append(f"<p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>")
+            
+            for gene, config in st.session_state.graph_configs.items():
+                # Regenerate figure from stored config
+                gene_data = pd.DataFrame(config['data_records'])
+                fig = GraphGenerator.create_gene_graph(
+                    gene_data,
+                    gene,
+                    config['settings'],
+                    EFFICACY_CONFIG.get(st.session_state.selected_efficacy, {}),
+                    sample_order=config.get('sample_order')
+                )
                 
-                for gene, fig in st.session_state.graphs.items():
-                    html_parts.append(f"<h2>{gene}</h2>")
-                    html_parts.append(fig.to_html(include_plotlyjs='cdn', div_id=f"graph_{gene}"))
-                    html_parts.append("<hr>")
+                html_parts.append(f"<h2>{gene}</h2>")
+                html_parts.append(fig.to_html(include_plotlyjs='cdn', div_id=f"graph_{gene}"))
+                html_parts.append("<hr>")
                 
                 html_parts.append("</body></html>")
                 combined_html = "\n".join(html_parts)
@@ -1674,7 +1812,17 @@ with tab5:
         with col2:
             # Individual graph HTML
             st.markdown("**Individual Graph HTML**")
-            for gene, fig in st.session_state.graphs.items():
+            for gene, config in st.session_state.get('graph_configs', {}).items():
+                # Regenerate figure
+                gene_data = pd.DataFrame(config['data_records'])
+                fig = GraphGenerator.create_gene_graph(
+                    gene_data,
+                    gene,
+                    config['settings'],
+                    EFFICACY_CONFIG.get(st.session_state.selected_efficacy, {}),
+                    sample_order=config.get('sample_order')
+                )
+                
                 html_buffer = io.StringIO()
                 fig.write_html(html_buffer)
                 
