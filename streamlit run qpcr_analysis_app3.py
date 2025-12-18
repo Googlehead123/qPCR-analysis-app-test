@@ -304,7 +304,7 @@ class AnalysisEngine:
         
         # Process each target gene separately (exclude housekeeping)
         for target in data['Target'].unique():
-            if target.upper() in [hk_gene.upper(), 'ACTIN', 'B-ACTIN', 'GAPDH', 'ACTB']:
+            if target.upper() in [hk_gene.upper(), 'ACTIN', 'B-ACTIN', 'GAPDH', 'ACTB', 'BA', 'BETA-ACTIN', 'β-ACTIN']:
                 continue
             
             target_data = data[data['Target'] == target]
@@ -998,7 +998,7 @@ with tab1:
             
             # Detect housekeeping gene
             hk_genes = [g for g in st.session_state.data['Target'].unique() 
-                       if g.upper() in ['ACTIN', 'B-ACTIN', 'GAPDH', 'ACTB']]
+                       if g.upper() in ['ACTIN', 'B-ACTIN', 'GAPDH', 'ACTB', 'BA', 'BETA-ACTIN', 'β-ACTIN']]
             if hk_genes:
                 st.session_state.hk_gene = st.selectbox("🔬 Housekeeping Gene", hk_genes, key='hk_select')
                 col4.metric("HK Gene", st.session_state.hk_gene)
@@ -1010,7 +1010,7 @@ with tab1:
 # ==================== TAB 2: SAMPLE MAPPING ====================
 with tab2:
     st.header("Step 2: Map Samples to Conditions")
-        
+    
     if st.session_state.data is not None:
         # Efficacy type selection
         detected_genes = set(st.session_state.data['Target'].unique())
@@ -1036,13 +1036,11 @@ with tab2:
             for ctrl_type, ctrl_name in config['controls'].items():
                 st.markdown(f"- **{ctrl_type.title()}**: {ctrl_name}")
         
-        # Sample mapping interface with professional layout
         st.markdown("---")
         st.markdown("### 🗺️ Sample Condition Mapping")
         
-        # CRITICAL FIX: Only initialize sample_order ONCE, never reinitialize
+        # Initialize sample_order if not exists
         if 'sample_order' not in st.session_state or st.session_state.sample_order is None:
-            # Get unique samples and sort naturally (using global function)
             unique_samples = sorted(
                 st.session_state.data['Sample'].unique(),
                 key=natural_sort_key
@@ -1054,7 +1052,7 @@ with tab2:
         if 'baseline' in config['controls']:
             group_types.insert(0, 'Baseline')
         
-        # Ensure all samples in sample_order have mapping
+        # Ensure all samples have mapping
         for sample in st.session_state.sample_order:
             if sample not in st.session_state.sample_mapping:
                 st.session_state.sample_mapping[sample] = {
@@ -1065,111 +1063,187 @@ with tab2:
             if 'include' not in st.session_state.sample_mapping[sample]:
                 st.session_state.sample_mapping[sample]['include'] = True
         
-        # CRITICAL FIX: Initialize move_action (not pending_move)
-        if 'move_action' not in st.session_state:
-            st.session_state.move_action = None
+        # ============ SAMPLE ORDER MANAGEMENT ============
+        st.subheader("📊 Sample Display Order")
         
-        # CRITICAL FIX: Process move action BEFORE rendering
-        if st.session_state.move_action is not None:
-            direction, sample_name = st.session_state.move_action
-            
-            try:
-                current_index = st.session_state.sample_order.index(sample_name)
-                new_order = st.session_state.sample_order.copy()
-                
-                if direction == 'up' and current_index > 0:
-                    # Swap with previous
-                    new_order[current_index], new_order[current_index - 1] = \
-                        new_order[current_index - 1], new_order[current_index]
-                    st.session_state.sample_order = new_order
-                    
-                elif direction == 'down' and current_index < len(new_order) - 1:
-                    # Swap with next
-                    new_order[current_index], new_order[current_index + 1] = \
-                        new_order[current_index + 1], new_order[current_index]
-                    st.session_state.sample_order = new_order
-            except ValueError:
-                pass  # Sample not found
-            
-            # Clear the action and rerun
-            st.session_state.move_action = None
-            st.rerun()
-        # Search and filter functionality
-        col_search, col_count = st.columns([3, 1])
-
-        with col_search:
-            search_term = st.text_input(
-                "🔍 Search samples",
-                placeholder="Filter by sample name or condition...",
-                key="sample_search"
+        col_method, col_action = st.columns([2, 1])
+        
+        with col_method:
+            order_method = st.radio(
+                "Choose ordering method:",
+                ["Manual Entry", "Drag & Drop (Visual)"],
+                horizontal=True
             )
-
-        # Filter samples based on search
+        
+        # METHOD 1: Manual Entry
+        if order_method == "Manual Entry":
+            st.info("💡 Enter comma-separated sample indices (1-based). Example: 3,1,4,2,5")
+            
+            # Show current order with numbers
+            current_order_display = ", ".join([
+                f"{idx+1}={sample}" 
+                for idx, sample in enumerate(st.session_state.sample_order)
+            ])
+            
+            with st.expander("📋 Current Order Reference", expanded=True):
+                st.code(current_order_display, language=None)
+            
+            # Manual order input
+            col_input, col_apply = st.columns([3, 1])
+            
+            with col_input:
+                new_order_str = st.text_input(
+                    "Enter new order (e.g., 3,1,2,4,5):",
+                    placeholder="3,1,2,4,5",
+                    key="manual_order_input"
+                )
+            
+            with col_apply:
+                st.write("")  # Spacing
+                st.write("")  # Spacing
+                if st.button("🔄 Apply Order", use_container_width=True):
+                    try:
+                        # Parse input
+                        indices = [int(x.strip()) - 1 for x in new_order_str.split(',')]
+                        
+                        # Validate
+                        if len(indices) != len(st.session_state.sample_order):
+                            st.error(f"❌ Must provide exactly {len(st.session_state.sample_order)} indices")
+                        elif set(indices) != set(range(len(st.session_state.sample_order))):
+                            st.error("❌ Must use each index exactly once")
+                        elif any(i < 0 or i >= len(st.session_state.sample_order) for i in indices):
+                            st.error(f"❌ Indices must be between 1 and {len(st.session_state.sample_order)}")
+                        else:
+                            # Apply new order
+                            new_order = [st.session_state.sample_order[i] for i in indices]
+                            st.session_state.sample_order = new_order
+                            st.success("✅ Order updated!")
+                            st.rerun()
+                    except ValueError:
+                        st.error("❌ Invalid format. Use comma-separated numbers (e.g., 3,1,2,4,5)")
+        
+        # METHOD 2: Drag & Drop (Visual)
+        else:
+            st.info("💡 Use ⬆️ ⬇️ buttons to move samples, or select and swap positions")
+            
+            # Quick swap functionality
+            col_swap1, col_swap2, col_swap_btn = st.columns([2, 2, 1])
+            
+            with col_swap1:
+                pos1 = st.number_input(
+                    "Swap position",
+                    min_value=1,
+                    max_value=len(st.session_state.sample_order),
+                    value=1,
+                    key="swap_pos1"
+                )
+            
+            with col_swap2:
+                pos2 = st.number_input(
+                    "with position",
+                    min_value=1,
+                    max_value=len(st.session_state.sample_order),
+                    value=2,
+                    key="swap_pos2"
+                )
+            
+            with col_swap_btn:
+                st.write("")
+                st.write("")
+                if st.button("🔄 Swap", use_container_width=True):
+                    if pos1 != pos2:
+                        idx1, idx2 = pos1 - 1, pos2 - 1
+                        new_order = st.session_state.sample_order.copy()
+                        new_order[idx1], new_order[idx2] = new_order[idx2], new_order[idx1]
+                        st.session_state.sample_order = new_order
+                        st.success(f"✅ Swapped positions {pos1} ↔ {pos2}")
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ Select different positions")
+        
+        st.markdown("---")
+        
+        # ============ SAMPLE MAPPING TABLE ============
+        st.subheader("🗂️ Sample Mapping Table")
+        
+        # Search functionality
+        search_term = st.text_input(
+            "🔍 Search samples",
+            placeholder="Filter by sample name or condition...",
+            key="sample_search"
+        )
+        
+        # Filter samples
         if search_term:
             filtered_samples = [
                 s for s in st.session_state.sample_order 
                 if search_term.lower() in s.lower() or 
-                search_term.lower() in st.session_state.sample_mapping.get(s, {}).get('condition', '').lower()
+                   search_term.lower() in st.session_state.sample_mapping.get(s, {}).get('condition', '').lower()
             ]
         else:
             filtered_samples = st.session_state.sample_order
-
-        with col_count:
-            st.metric(
-                "Showing",
-                f"{len(filtered_samples)}/{len(st.session_state.sample_order)}",
-                delta=None
-            )
-
-        st.markdown("---")
         
-        # Header row with styled background
+        st.caption(f"Showing {len(filtered_samples)} of {len(st.session_state.sample_order)} samples")
+        
+        # Header row
         st.markdown("""
         <div style='background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
             <table style='width: 100%;'>
                 <tr>
                     <th style='width: 5%; text-align: center;'>✓</th>
-                    <th style='width: 10%;'>Order</th>
+                    <th style='width: 8%; text-align: center;'>Order</th>
                     <th style='width: 15%;'>Original</th>
                     <th style='width: 25%;'>Condition Name</th>
                     <th style='width: 20%;'>Group</th>
-                    <th style='width: 10%;'>Move</th>
+                    <th style='width: 12%;'>Move</th>
                 </tr>
             </table>
         </div>
         """, unsafe_allow_html=True)
         
-        # Sample rows - USING sample_order (this is what gets passed to graphs!)
-        for i, sample in enumerate(filtered_samples):
-            # Get actual index in full sample_order for move buttons
-            actual_index = st.session_state.sample_order.index(sample)
+        # Sample rows with working move buttons
+        for display_idx, sample in enumerate(filtered_samples):
+            # Get actual index in full sample_order
+            actual_idx = st.session_state.sample_order.index(sample)
+            
             with st.container():
-                col0, col_order, col1, col2, col3, col_move = st.columns([0.5, 0.8, 1.5, 2.5, 2, 1])
+                col0, col_order, col1, col2, col3, col_move = st.columns([0.5, 0.8, 1.5, 2.5, 2, 1.2])
                 
                 # Include checkbox
                 with col0:
+                    include_key = f"include_{sample}_{actual_idx}"
                     include = st.checkbox(
-                        "", 
+                        "",
                         value=st.session_state.sample_mapping[sample].get('include', True),
-                        key=f"include_{sample}",
+                        key=include_key,
                         label_visibility="collapsed"
                     )
                     st.session_state.sample_mapping[sample]['include'] = include
                 
-                # Order number
+                # Order display
                 with col_order:
-                    st.markdown(f"<div style='text-align: center; padding-top: 10px;'><b>{i+1}</b></div>", unsafe_allow_html=True)
+                    st.markdown(
+                        f"<div style='text-align: center; padding-top: 10px;'><b>{actual_idx + 1}</b></div>",
+                        unsafe_allow_html=True
+                    )
                 
-                # Original sample name (non-editable)
+                # Original sample name
                 with col1:
-                    st.text_input("Original", sample, key=f"orig_{sample}", disabled=True, label_visibility="collapsed")
+                    st.text_input(
+                        "Original",
+                        sample,
+                        key=f"orig_{sample}_{actual_idx}",
+                        disabled=True,
+                        label_visibility="collapsed"
+                    )
                 
-                # Condition name (editable)
+                # Condition name
                 with col2:
+                    cond_key = f"cond_{sample}_{actual_idx}"
                     cond = st.text_input(
                         "Condition",
                         st.session_state.sample_mapping[sample]['condition'],
-                        key=f"cond_{sample}",
+                        key=cond_key,
                         label_visibility="collapsed",
                         placeholder="Enter condition name..."
                     )
@@ -1183,53 +1257,52 @@ with tab2:
                     except:
                         pass
                     
+                    grp_key = f"grp_{sample}_{actual_idx}"
                     grp = st.selectbox(
                         "Group",
                         group_types,
                         index=grp_idx,
-                        key=f"grp_{sample}",
+                        key=grp_key,
                         label_visibility="collapsed"
                     )
                     st.session_state.sample_mapping[sample]['group'] = grp
                 
-                # FIXED: Move buttons with proper callback
+                # Move buttons (only show if not filtered)
                 with col_move:
-                    move_col1, move_col2 = st.columns(2)
-                    with move_col1:
-                        if actual_index > 0:
-                            def move_up():
-                                st.session_state.move_action = ('up', sample)
-                            
-                            st.button(
-                                "⬆", 
-                                key=f"btn_up_{sample}_{i}", 
-                                help="Move up",
-                                use_container_width=True,
-                                on_click=move_up
-                            )
-                    with move_col2:
-                        if i < len(st.session_state.sample_order) - 1:
-                            def move_down():
-                                st.session_state.move_action = ('down', sample)
-                            
-                            st.button(
-                                "⬇", 
-                                key=f"btn_down_{sample}_{i}", 
-                                help="Move down",
-                                use_container_width=True,
-                                on_click=move_down
-                            )
+                    if not search_term:  # Only show move buttons when not filtering
+                        move_col1, move_col2 = st.columns(2)
+                        
+                        with move_col1:
+                            if actual_idx > 0:
+                                up_key = f"up_{sample}_{actual_idx}"
+                                if st.button("⬆", key=up_key, help="Move up", use_container_width=True):
+                                    new_order = st.session_state.sample_order.copy()
+                                    new_order[actual_idx], new_order[actual_idx - 1] = \
+                                        new_order[actual_idx - 1], new_order[actual_idx]
+                                    st.session_state.sample_order = new_order
+                                    st.rerun()
+                        
+                        with move_col2:
+                            if actual_idx < len(st.session_state.sample_order) - 1:
+                                down_key = f"down_{sample}_{actual_idx}"
+                                if st.button("⬇", key=down_key, help="Move down", use_container_width=True):
+                                    new_order = st.session_state.sample_order.copy()
+                                    new_order[actual_idx], new_order[actual_idx + 1] = \
+                                        new_order[actual_idx + 1], new_order[actual_idx]
+                                    st.session_state.sample_order = new_order
+                                    st.rerun()
+                    else:
+                        st.caption("(filtered)")
                 
-                # Divider line
                 st.markdown("<hr style='margin: 5px 0; opacity: 0.3;'>", unsafe_allow_html=True)
         
-        # Update excluded_samples from include flags
+        # Update excluded samples
         st.session_state.excluded_samples = set([
             s for s, v in st.session_state.sample_mapping.items() 
             if not v.get('include', True)
         ])
         
-        # Summary with styled cards
+        # Summary section
         st.markdown("---")
         st.subheader("📊 Mapping Summary")
         
@@ -1253,7 +1326,7 @@ with tab2:
         with st.expander("📋 View Detailed Mapping Table"):
             mapping_df = pd.DataFrame([
                 {
-                    'Order': idx+1,
+                    'Order': idx + 1,
                     'Include': '✅' if v.get('include', True) else '❌',
                     'Original': s,
                     'Condition': v['condition'],
@@ -1264,15 +1337,15 @@ with tab2:
             ])
             st.dataframe(mapping_df, use_container_width=True, hide_index=True)
         
-        # Run analysis   
+        # Run analysis section
         st.markdown("---")
         st.subheader("🔬 Run Full Analysis (ΔΔCt + Statistics)")
         
-        # CRITICAL: Build condition list using sample_order (maintains user's order!)
+        # Build condition list
         condition_list = []
         sample_to_condition = {}
         
-        for sample in st.session_state.sample_order:  # Use sample_order, not random order
+        for sample in st.session_state.sample_order:
             if sample in st.session_state.sample_mapping:
                 mapping_info = st.session_state.sample_mapping[sample]
                 if mapping_info.get('include', True):
@@ -1281,10 +1354,8 @@ with tab2:
                     sample_to_condition[condition] = sample
         
         if condition_list:
-            # Enhanced layout with clear separation
             st.markdown("#### 📊 Analysis Configuration")
             
-            # Info boxes
             col_info1, col_info2, col_info3 = st.columns(3)
             with col_info1:
                 st.info("**ΔΔCt Reference:** Baseline for fold change calculation (FC = 1.0)")
@@ -1293,7 +1364,6 @@ with tab2:
             with col_info3:
                 st.info("**P-value Ref 2:** Secondary comparison (#) - Optional")
             
-            # Selection boxes
             col_r1, col_r2, col_r3 = st.columns(3)
             
             with col_r1:
@@ -1319,7 +1389,6 @@ with tab2:
                 st.caption(f"→ Sample: **{cmp_sample_key}**")
             
             with col_r3:
-                # Add "None" option for optional second comparison
                 condition_list_with_none = ["None"] + condition_list
                 cmp_condition_2_display = st.selectbox(
                     "📊 P-value Ref 2 (#)",
@@ -1336,7 +1405,6 @@ with tab2:
                     cmp_sample_key_2 = sample_to_condition[cmp_condition_2_display]
                     st.caption(f"→ Sample: **{cmp_sample_key_2}**")
             
-            # Visual summary
             st.markdown("---")
             col_sum1, col_sum2, col_sum3 = st.columns([1, 2, 1])
             with col_sum2:
@@ -1357,7 +1425,6 @@ with tab2:
             
             st.markdown("---")
             
-            # Run button
             if st.button("▶️ Run Full Analysis Now", type="primary", use_container_width=True):
                 ok = AnalysisEngine.run_full_analysis(ref_sample_key, cmp_sample_key, cmp_sample_key_2)
                 if ok:
@@ -1594,78 +1661,132 @@ with tab4:
                 if 'bar_colors_per_sample' not in st.session_state.graph_settings:
                     st.session_state.graph_settings['bar_colors_per_sample'] = {}
                 
-                # Loop through each bar/condition - COMPACT VERSION
-                for idx, (_, row) in enumerate(gene_data.iterrows()):
-                    condition = row['Condition']
-                    group = row.get('Group', 'Treatment')
+                # ============ CONSOLIDATED COLOR PANEL ============
+                st.markdown("<h4>🎨 All Bar Colors & Settings</h4>", unsafe_allow_html=True)
+
+                with st.expander("🎨 Color & Visibility Controls (All Bars)", expanded=False):
+                    st.caption("Adjust colors and show/hide markers for each bar")
                     
-                    # Determine default color based on group
-                    default_colors = {
-                        'Baseline': '#FFFFFF',
-                        'Non-treated': '#FFFFFF',
-                        'Control': '#FFFFFF',
-                        'Negative Control': '#9E9E9E',
-                        'Inducer': '#9E9E9E',
-                        'Positive Control': '#9E9E9E',
-                        'Treatment': '#D3D3D3'
-                    }
-                    default_color = default_colors.get(group, '#D3D3D3')
+                    # Create a form for better performance
+                    num_bars = len(gene_data)
                     
-                    # Unique key for this bar
-                    bar_key = f"{gene}_{condition}"
-                    
-                    # Initialize settings for this bar if not exists
-                    if bar_key not in st.session_state[f'{gene}_bar_settings']:
-                        st.session_state[f'{gene}_bar_settings'][bar_key] = {
-                            'color': default_color,
-                            'show_sig': True,
-                            'show_err': True
+                    for idx, (_, row) in enumerate(gene_data.iterrows()):
+                        condition = row['Condition']
+                        group = row.get('Group', 'Treatment')
+                        
+                        # Determine default color
+                        default_colors = {
+                            'Baseline': '#FFFFFF',
+                            'Non-treated': '#FFFFFF',
+                            'Control': '#FFFFFF',
+                            'Negative Control': '#9E9E9E',
+                            'Inducer': '#9E9E9E',
+                            'Positive Control': '#9E9E9E',
+                            'Treatment': '#D3D3D3'
                         }
-                    
-                    # Create COMPACT expandable section for each bar
-                    with st.expander(f"{condition[:20]}{'...' if len(condition) > 20 else ''}", expanded=False):
+                        default_color = default_colors.get(group, '#D3D3D3')
                         
-                        # Compact layout - single column
-                        st.markdown(f"<p style='font-size: 10px; color: #666;'>{group}</p>", unsafe_allow_html=True)
+                        # Unique key
+                        bar_key = f"{gene}_{condition}"
                         
-                        # COLOR PICKER - Compact
-                        new_color = st.color_picker(
-                            "Color",
-                            st.session_state[f'{gene}_bar_settings'][bar_key]['color'],
-                            key=f"color_{gene}_{condition}_{idx}"
-                        )
-                        st.session_state[f'{gene}_bar_settings'][bar_key]['color'] = new_color
-                        st.session_state.graph_settings['bar_colors_per_sample'][bar_key] = new_color
-                        
-                        # COMPACT TOGGLES
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            show_sig_bar = st.checkbox(
-                                "⭐",
-                                st.session_state[f'{gene}_bar_settings'][bar_key]['show_sig'],
-                                key=f"sig_{gene}_{condition}_{idx}",
-                                help="Show significance"
-                            )
-                            st.session_state[f'{gene}_bar_settings'][bar_key]['show_sig'] = show_sig_bar
-                        
-                        with col_b:
-                            show_err_bar = st.checkbox(
-                                "📏",
-                                st.session_state[f'{gene}_bar_settings'][bar_key]['show_err'],
-                                key=f"err_{gene}_{condition}_{idx}",
-                                help="Show error bar"
-                            )
-                            st.session_state[f'{gene}_bar_settings'][bar_key]['show_err'] = show_err_bar
-                        
-                        # COMPACT RESET BUTTON
-                        if st.button("↺", key=f"reset_{gene}_{condition}_{idx}", use_container_width=True, help="Reset"):
+                        # Initialize settings
+                        if bar_key not in st.session_state[f'{gene}_bar_settings']:
                             st.session_state[f'{gene}_bar_settings'][bar_key] = {
                                 'color': default_color,
                                 'show_sig': True,
                                 'show_err': True
                             }
-                            if bar_key in st.session_state.graph_settings.get('bar_colors_per_sample', {}):
-                                del st.session_state.graph_settings['bar_colors_per_sample'][bar_key]
+                        
+                        # Create compact row for each bar
+                        st.markdown(f"**Bar {idx + 1}: {condition}** <span style='color: #888; font-size: 0.9em;'>({group})</span>", unsafe_allow_html=True)
+                        
+                        col_color, col_sig, col_err, col_reset = st.columns([3, 1, 1, 1])
+                        
+                        with col_color:
+                            new_color = st.color_picker(
+                                f"Color",
+                                st.session_state[f'{gene}_bar_settings'][bar_key]['color'],
+                                key=f"color_{gene}_{condition}_{idx}",
+                                label_visibility="collapsed"
+                            )
+                            st.session_state[f'{gene}_bar_settings'][bar_key]['color'] = new_color
+                            st.session_state.graph_settings['bar_colors_per_sample'][bar_key] = new_color
+                        
+                        with col_sig:
+                            show_sig_bar = st.checkbox(
+                                "⭐",
+                                st.session_state[f'{gene}_bar_settings'][bar_key]['show_sig'],
+                                key=f"sig_{gene}_{condition}_{idx}",
+                                help="Show significance",
+                                label_visibility="collapsed"
+                            )
+                            st.session_state[f'{gene}_bar_settings'][bar_key]['show_sig'] = show_sig_bar
+                        
+                        with col_err:
+                            show_err_bar = st.checkbox(
+                                "📏",
+                                st.session_state[f'{gene}_bar_settings'][bar_key]['show_err'],
+                                key=f"err_{gene}_{condition}_{idx}",
+                                help="Show error bar",
+                                label_visibility="collapsed"
+                            )
+                            st.session_state[f'{gene}_bar_settings'][bar_key]['show_err'] = show_err_bar
+                        
+                        with col_reset:
+                            if st.button("↺", key=f"reset_{gene}_{condition}_{idx}", help="Reset to default", use_container_width=True):
+                                st.session_state[f'{gene}_bar_settings'][bar_key] = {
+                                    'color': default_color,
+                                    'show_sig': True,
+                                    'show_err': True
+                                }
+                                if bar_key in st.session_state.graph_settings.get('bar_colors_per_sample', {}):
+                                    del st.session_state.graph_settings['bar_colors_per_sample'][bar_key]
+                                st.rerun()
+                        
+                        # Divider between bars
+                        if idx < num_bars - 1:
+                            st.markdown("<hr style='margin: 8px 0; opacity: 0.2;'>", unsafe_allow_html=True)
+                    
+                    # Bulk actions at bottom
+                    st.markdown("---")
+                    st.markdown("**🔧 Bulk Actions**")
+                    
+                    col_bulk1, col_bulk2, col_bulk3 = st.columns(3)
+                    
+                    with col_bulk1:
+                        if st.button("Reset All Colors", key=f"reset_all_{gene}", use_container_width=True):
+                            for idx, (_, row) in enumerate(gene_data.iterrows()):
+                                condition = row['Condition']
+                                group = row.get('Group', 'Treatment')
+                                bar_key = f"{gene}_{condition}"
+                                
+                                default_color = default_colors.get(group, '#D3D3D3')
+                                st.session_state[f'{gene}_bar_settings'][bar_key]['color'] = default_color
+                                
+                                if bar_key in st.session_state.graph_settings.get('bar_colors_per_sample', {}):
+                                    del st.session_state.graph_settings['bar_colors_per_sample'][bar_key]
+                            
+                            st.success("✅ All colors reset")
+                            st.rerun()
+                    
+                    with col_bulk2:
+                        if st.button("Show All Markers", key=f"show_all_{gene}", use_container_width=True):
+                            for idx, (_, row) in enumerate(gene_data.iterrows()):
+                                condition = row['Condition']
+                                bar_key = f"{gene}_{condition}"
+                                st.session_state[f'{gene}_bar_settings'][bar_key]['show_sig'] = True
+                                st.session_state[f'{gene}_bar_settings'][bar_key]['show_err'] = True
+                            st.success("✅ All markers shown")
+                            st.rerun()
+                    
+                    with col_bulk3:
+                        if st.button("Hide All Markers", key=f"hide_all_{gene}", use_container_width=True):
+                            for idx, (_, row) in enumerate(gene_data.iterrows()):
+                                condition = row['Condition']
+                                bar_key = f"{gene}_{condition}"
+                                st.session_state[f'{gene}_bar_settings'][bar_key]['show_sig'] = False
+                                st.session_state[f'{gene}_bar_settings'][bar_key]['show_err'] = False
+                            st.success("✅ All markers hidden")
                             st.rerun()
             
             with col_graph:
