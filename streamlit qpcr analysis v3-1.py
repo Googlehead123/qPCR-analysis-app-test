@@ -631,6 +631,10 @@ class GraphGenerator:
         max_error = error_array.max() if len(error_array) > 0 else 0
         y_max_auto = max_y_value + max_error + (max_y_value * 0.15)  # Add 15% padding for stars
         
+        # FIXED ABSOLUTE SPACING for dual symbols (in data units)
+        # This ensures consistent spacing across all bars regardless of height
+        fixed_symbol_spacing = y_max_auto * 0.05  # 5% of y-axis as fixed spacing unit
+        
         # Add significance symbols - aligned with bars (DUAL SUPPORT with absolute positioning)
         for idx in range(n_bars):
             row = gene_data_indexed.iloc[idx]
@@ -642,7 +646,7 @@ class GraphGenerator:
             sig_1 = row.get('significance', '')
             sig_2 = row.get('significance_2', '')
             
-            # Calculate base y position
+            # Calculate base y position (top of error bar)
             bar_height = row['Relative_Expression']
             error_bar_height = error_visible_array[idx]
             base_y_position = bar_height + error_bar_height
@@ -666,53 +670,49 @@ class GraphGenerator:
                     symbols_to_show.append(sig_2)
                     font_sizes.append(hashtag_font_size)
                 
-                # Display symbols with ABSOLUTE positioning
-                if len(symbols_to_show) >= 1:
-                    # Fixed absolute spacing in data units
-                    # Calculate spacing as percentage of y-axis range for consistency
-                    absolute_spacing = y_max_auto * 0.035  # 3.5% of y-axis range
+                # Display symbols with FIXED ABSOLUTE SPACING
+                if len(symbols_to_show) == 2:
+                    # Two symbols: stack with FIXED absolute spacing
+                    # Bottom symbol (asterisk) - positioned above error bar
+                    fig.add_annotation(
+                        x=idx,
+                        y=base_y_position + (fixed_symbol_spacing * 0.2),
+                        text=symbols_to_show[0],
+                        showarrow=False,
+                        font=dict(size=font_sizes[0], color='black', family='Arial'),
+                        xref='x',
+                        yref='y',
+                        xanchor='center',
+                        yanchor='bottom'
+                    )
                     
-                    if len(symbols_to_show) == 2:
-                        # Two symbols: stack with fixed spacing
-                        # Bottom symbol (asterisk)
-                        fig.add_annotation(
-                            x=idx,
-                            y=base_y_position + (absolute_spacing * 0.3),  # Small offset from error bar
-                            text=symbols_to_show[0],
-                            showarrow=False,
-                            font=dict(size=font_sizes[0], color='black', family='Arial'),
-                            xref='x',
-                            yref='y',
-                            xanchor='center',
-                            yanchor='bottom'
-                        )
-                        
-                        # Top symbol (hashtag) - fixed absolute distance above asterisk
-                        fig.add_annotation(
-                            x=idx,
-                            y=base_y_position + absolute_spacing,  # Fixed spacing from error bar
-                            text=symbols_to_show[1],
-                            showarrow=False,
-                            font=dict(size=font_sizes[1], color='black', family='Arial'),
-                            xref='x',
-                            yref='y',
-                            xanchor='center',
-                            yanchor='bottom'
-                        )
-                        
-                    elif len(symbols_to_show) == 1:
-                        # Single symbol - positioned just above error bar
-                        fig.add_annotation(
-                            x=idx,
-                            y=base_y_position + (absolute_spacing * 0.3),
-                            text=symbols_to_show[0],
-                            showarrow=False,
-                            font=dict(size=font_sizes[0], color='black', family='Arial'),
-                            xref='x',
-                            yref='y',
-                            xanchor='center',
-                            yanchor='bottom'
-                        )
+                    # Top symbol (hashtag) - FIXED absolute distance above bottom symbol
+                    # The vertical gap is always fixed_symbol_spacing regardless of bar height
+                    fig.add_annotation(
+                        x=idx,
+                        y=base_y_position + (fixed_symbol_spacing * 0.2) + fixed_symbol_spacing,
+                        text=symbols_to_show[1],
+                        showarrow=False,
+                        font=dict(size=font_sizes[1], color='black', family='Arial'),
+                        xref='x',
+                        yref='y',
+                        xanchor='center',
+                        yanchor='bottom'
+                    )
+                    
+                elif len(symbols_to_show) == 1:
+                    # Single symbol - positioned just above error bar
+                    fig.add_annotation(
+                        x=idx,
+                        y=base_y_position + (fixed_symbol_spacing * 0.2),
+                        text=symbols_to_show[0],
+                        showarrow=False,
+                        font=dict(size=font_sizes[0], color='black', family='Arial'),
+                        xref='x',
+                        yref='y',
+                        xanchor='center',
+                        yanchor='bottom'
+                    )
         
         # Custom y-axis label with bold red gene name
         y_label_html = f"Relative <b style='color:red;'>{gene}</b> Expression Level"
@@ -731,6 +731,7 @@ class GraphGenerator:
             fixedrange=False
         )
         
+        # ---
         if settings.get('y_log_scale'):
             y_axis_config['type'] = 'log'
             y_axis_config.pop('range', None)
