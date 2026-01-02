@@ -626,7 +626,7 @@ class GraphGenerator:
             showlegend=False
         ))
         
-        # Add significance symbols - aligned with bars (DUAL SUPPORT)
+        # Add significance symbols - aligned with bars (DUAL SUPPORT with absolute positioning)
         for idx in range(n_bars):
             row = gene_data_indexed.iloc[idx]
             condition = row['Condition']
@@ -640,66 +640,82 @@ class GraphGenerator:
             # Calculate base y position
             bar_height = row['Relative_Expression']
             error_bar_height = error_visible_array[idx]
-            base_y_position = bar_height + error_bar_height + (bar_height * 0.05)
+            base_y_position = bar_height + error_bar_height
             
-            # Uniform font size for all symbols
-            uniform_font_size = 16
+            # Font sizes - asterisk at normal size, hashtag reduced to match visually
+            asterisk_font_size = 16
+            hashtag_font_size = 10  # Reduced by 6 to match asterisk visual size
             
             # Check if we need to show significance
             if show_sig_global and bar_config.get('show_sig', True):
                 symbols_to_show = []
+                font_sizes = []
                 
                 # Add first significance (asterisks)
                 if sig_1 in ['*', '**', '***']:
                     symbols_to_show.append(sig_1)
+                    font_sizes.append(asterisk_font_size)
                 
                 # Add second significance (hashtags)
                 if sig_2 in ['#', '##', '###']:
                     symbols_to_show.append(sig_2)
+                    font_sizes.append(hashtag_font_size)
                 
-                # Display symbols stacked vertically if both exist
-                if len(symbols_to_show) == 2:
-                    # Stack vertically: asterisk on bottom, hashtag on top
-                    fig.add_annotation(
-                        x=idx,
-                        y=base_y_position,
-                        text=symbols_to_show[0],  # asterisk
-                        showarrow=False,
-                        font=dict(size=uniform_font_size, color='black'),
-                        xref='x',
-                        yref='y',
-                        xanchor='center',
-                        yanchor='bottom'
-                    )
+                # Display symbols with ABSOLUTE positioning (paper coordinates)
+                if len(symbols_to_show) >= 1:
+                    # Convert data y-position to paper coordinates for absolute positioning
+                    # First, we need to place them relative to the bar, then use fixed spacing
                     
-                    # Calculate offset for second symbol (based on font size)
-                    vertical_offset = bar_height * 0.08
+                    # For single or dual symbols, use consistent absolute spacing
+                    # Start position: just above error bar
+                    y_start = base_y_position
                     
-                    fig.add_annotation(
-                        x=idx,
-                        y=base_y_position + vertical_offset,
-                        text=symbols_to_show[1],  # hashtag
-                        showarrow=False,
-                        font=dict(size=uniform_font_size, color='black'),
-                        xref='x',
-                        yref='y',
-                        xanchor='center',
-                        yanchor='bottom'
-                    )
+                    # Fixed absolute spacing in data units
+                    # Calculate spacing as percentage of y-axis range for consistency
+                    y_axis_range = y_max_auto if 'y_max_auto' in locals() else max_y_value * 1.3
+                    absolute_spacing = y_axis_range * 0.035  # 3.5% of y-axis range
                     
-                elif len(symbols_to_show) == 1:
-                    # Single symbol
-                    fig.add_annotation(
-                        x=idx,
-                        y=base_y_position,
-                        text=symbols_to_show[0],
-                        showarrow=False,
-                        font=dict(size=uniform_font_size, color='black'),
-                        xref='x',
-                        yref='y',
-                        xanchor='center',
-                        yanchor='bottom'
-                    )
+                    if len(symbols_to_show) == 2:
+                        # Two symbols: stack with fixed spacing
+                        # Bottom symbol (asterisk)
+                        fig.add_annotation(
+                            x=idx,
+                            y=y_start + (absolute_spacing * 0.3),  # Small offset from error bar
+                            text=symbols_to_show[0],
+                            showarrow=False,
+                            font=dict(size=font_sizes[0], color='black', family='Arial'),
+                            xref='x',
+                            yref='y',
+                            xanchor='center',
+                            yanchor='bottom'
+                        )
+                        
+                        # Top symbol (hashtag) - fixed absolute distance above asterisk
+                        fig.add_annotation(
+                            x=idx,
+                            y=y_start + absolute_spacing,  # Fixed spacing from error bar
+                            text=symbols_to_show[1],
+                            showarrow=False,
+                            font=dict(size=font_sizes[1], color='black', family='Arial'),
+                            xref='x',
+                            yref='y',
+                            xanchor='center',
+                            yanchor='bottom'
+                        )
+                        
+                    elif len(symbols_to_show) == 1:
+                        # Single symbol - positioned just above error bar
+                        fig.add_annotation(
+                            x=idx,
+                            y=y_start + (absolute_spacing * 0.3),
+                            text=symbols_to_show[0],
+                            showarrow=False,
+                            font=dict(size=font_sizes[0], color='black', family='Arial'),
+                            xref='x',
+                            yref='y',
+                            xanchor='center',
+                            yanchor='bottom'
+                        )
         
         # Custom y-axis label with bold red gene name
         y_label_html = f"Relative <b style='color:red;'>{gene}</b> Expression Level"
