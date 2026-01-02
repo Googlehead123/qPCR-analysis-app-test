@@ -822,7 +822,6 @@ with tab1:
             st.subheader("📊 Data Preview")
             st.dataframe(st.session_state.data.head(50), height=300)
             
-
 # ==================== TAB 2: SAMPLE MAPPING ====================
 with tab2:
     st.header("Step 2: Map Samples to Conditions")
@@ -856,91 +855,6 @@ with tab2:
         st.markdown("---")
         st.markdown("### 🗺️ Sample Condition Mapping")
         
-        # ============ MANUAL ORDER ENTRY FEATURE ============
-        with st.expander("🔢 Advanced: Manual Order Entry", expanded=False):
-            st.info("💡 Enter comma-separated sample indices (1-based) to reorder. Example: 3,1,4,2,5")
-            
-            # Show current order with indices
-            current_order_text = ", ".join([
-                f"{idx+1}={sample[:20]}" 
-                for idx, sample in enumerate(st.session_state.sample_order)
-            ])
-            st.caption(f"Current order: {current_order_text}")
-            
-            col_input, col_apply = st.columns([4, 1])
-            
-            with col_input:
-                new_order_input = st.text_input(
-                    "New order (e.g., 3,1,2,4,5):",
-                    placeholder="3,1,2,4,5",
-                    key="manual_order_input",
-                    label_visibility="collapsed"
-                )
-            
-            with col_apply:
-                if st.button("Apply", key="apply_manual_order", use_container_width=True):
-                    try:
-                        # Parse input
-                        indices = [int(x.strip()) - 1 for x in new_order_input.split(',')]
-                        
-                        # Validate
-                        if len(indices) != len(st.session_state.sample_order):
-                            st.error(f"❌ Need exactly {len(st.session_state.sample_order)} indices")
-                        elif set(indices) != set(range(len(st.session_state.sample_order))):
-                            st.error("❌ Use each number exactly once (no duplicates)")
-                        elif any(i < 0 or i >= len(st.session_state.sample_order) for i in indices):
-                            st.error(f"❌ Numbers must be between 1 and {len(st.session_state.sample_order)}")
-                        else:
-                            # Apply new order
-                            new_order = [st.session_state.sample_order[i] for i in indices]
-                            st.session_state.sample_order = new_order
-                            st.success("✅ Order updated!")
-                            st.rerun()
-                    except ValueError:
-                        st.error("❌ Invalid format. Use numbers separated by commas: 3,1,2")
-
-        st.markdown("---")
-        
-        # ============ QUICK SWAP FEATURE ============
-        with st.expander("🔄 Quick Swap Positions", expanded=False):
-            st.info("💡 Swap any two sample positions")
-            
-            col_pos1, col_pos2, col_swap = st.columns([2, 2, 1])
-            
-            with col_pos1:
-                swap_pos1 = st.number_input(
-                    "Position 1",
-                    min_value=1,
-                    max_value=len(st.session_state.sample_order),
-                    value=1,
-                    key="swap_pos1"
-                )
-                st.caption(f"→ {st.session_state.sample_order[swap_pos1-1][:30]}")
-            
-            with col_pos2:
-                swap_pos2 = st.number_input(
-                    "Position 2",
-                    min_value=1,
-                    max_value=len(st.session_state.sample_order),
-                    value=min(2, len(st.session_state.sample_order)),
-                    key="swap_pos2"
-                )
-                st.caption(f"→ {st.session_state.sample_order[swap_pos2-1][:30]}")
-            
-            with col_swap:
-                st.write("")  # Spacing
-                if st.button("Swap", key="execute_swap", use_container_width=True):
-                    if swap_pos1 != swap_pos2:
-                        idx1, idx2 = swap_pos1 - 1, swap_pos2 - 1
-                        st.session_state.sample_order[idx1], st.session_state.sample_order[idx2] = \
-                            st.session_state.sample_order[idx2], st.session_state.sample_order[idx1]
-                        st.success(f"✅ Swapped positions {swap_pos1} ↔ {swap_pos2}")
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ Select different positions")
-
-        st.markdown("---")
-        
         # Use sample_order if exists, otherwise get from data with natural sort
         if 'sample_order' in st.session_state and st.session_state.sample_order:
             samples = [s for s in st.session_state.sample_order 
@@ -968,7 +882,7 @@ with tab2:
             st.session_state.sample_order = samples.copy()
         
         # Ensure all samples have mapping
-        for sample in samples:
+        for sample in st.session_state.sample_order:
             if sample not in st.session_state.sample_mapping:
                 st.session_state.sample_mapping[sample] = {
                     'condition': sample, 
@@ -995,83 +909,79 @@ with tab2:
         </div>
         """, unsafe_allow_html=True)
         
-       # Sample rows with improved spacing
-    for i, sample in enumerate(st.session_state.sample_order):
-        # Container for each row
-        with st.container():
-            col0, col_order, col1, col2, col3, col_move = st.columns([0.5, 0.8, 1.5, 2.5, 2, 1])
-            
-            # Include checkbox
-            with col0:
-                include = st.checkbox(
-                    "", 
-                    value=st.session_state.sample_mapping[sample].get('include', True),
-                    key=f"include_{sample}_{i}",  # ✅ FIXED
-                    label_visibility="collapsed"
-                )
-                st.session_state.sample_mapping[sample]['include'] = include
-            
-            # Order number
-            with col_order:
-                st.markdown(f"<div style='text-align: center; padding-top: 10px;'><b>{i+1}</b></div>", unsafe_allow_html=True)
-            
-            # Original sample name (non-editable)
-            with col1:
-                st.text_input(
-                    "Original", 
-                    sample, 
-                    key=f"orig_{sample}_{i}",  # ✅ FIXED
-                    disabled=True, 
-                    label_visibility="collapsed"
-                )
-            
-            # Condition name (editable)
-            with col2:
-                cond = st.text_input(
-                    "Condition",
-                    st.session_state.sample_mapping[sample]['condition'],
-                    key=f"cond_{sample}_{i}",  # ✅ FIXED
-                    label_visibility="collapsed",
-                    placeholder="Enter condition name..."
-                )
-                st.session_state.sample_mapping[sample]['condition'] = cond
-            
-            # Group selector
-            with col3:
-                grp_idx = 0
-                try:
-                    grp_idx = group_types.index(st.session_state.sample_mapping[sample]['group'])
-                except:
-                    pass
+        # Sample rows with improved spacing
+        for i, sample in enumerate(st.session_state.sample_order):
+            # Container for each row
+            with st.container():
+                col0, col_order, col1, col2, col3, col_move = st.columns([0.5, 0.8, 1.5, 2.5, 2, 1])
                 
-                grp = st.selectbox(
-                    "Group",
-                    group_types,
-                    index=grp_idx,
-                    key=f"grp_{sample}_{i}",  # ✅ FIXED
-                    label_visibility="collapsed"
-                )
-                st.session_state.sample_mapping[sample]['group'] = grp
-            
-            # Move controls - FIXED SWAP LOGIC
-            with col_move:
-                btn_col1, btn_col2 = st.columns(2)
-                with btn_col1:
-                    if i > 0:
-                        if st.button("⬆", key=f"up_{sample}_{i}", help="Move up", use_container_width=True):
-                            st.session_state.sample_order[i], st.session_state.sample_order[i-1] = \
-                                st.session_state.sample_order[i-1], st.session_state.sample_order[i]
-                            st.rerun()
-                with btn_col2:
-                    if i < len(st.session_state.sample_order) - 1:
-                        if st.button("⬇", key=f"down_{sample}_{i}", help="Move down", use_container_width=True):
-                            st.session_state.sample_order[i], st.session_state.sample_order[i+1] = \
-                                st.session_state.sample_order[i+1], st.session_state.sample_order[i]
-                            st.rerun()
+                # Include checkbox
+                with col0:
+                    include = st.checkbox(
+                        "", 
+                        value=st.session_state.sample_mapping[sample].get('include', True),
+                        key=f"include_{sample}",
+                        label_visibility="collapsed"
+                    )
+                    st.session_state.sample_mapping[sample]['include'] = include
+                
+                # Order number
+                with col_order:
+                    st.markdown(f"<div style='text-align: center; padding-top: 10px;'><b>{i+1}</b></div>", unsafe_allow_html=True)
+                
+                # Original sample name (non-editable)
+                with col1:
+                    st.text_input("Original", sample, key=f"orig_{sample}", disabled=True, label_visibility="collapsed")
+                
+                # Condition name (editable)
+                with col2:
+                    cond = st.text_input(
+                        "Condition",
+                        st.session_state.sample_mapping[sample]['condition'],
+                        key=f"cond_{sample}",
+                        label_visibility="collapsed",
+                        placeholder="Enter condition name..."
+                    )
+                    st.session_state.sample_mapping[sample]['condition'] = cond
+                
+                # Group selector
+                with col3:
+                    grp_idx = 0
+                    try:
+                        grp_idx = group_types.index(st.session_state.sample_mapping[sample]['group'])
+                    except:
+                        pass
+                    
+                    grp = st.selectbox(
+                        "Group",
+                        group_types,
+                        index=grp_idx,
+                        key=f"grp_{sample}",
+                        label_visibility="collapsed"
+                    )
+                    st.session_state.sample_mapping[sample]['group'] = grp
+                
+                # Move controls - FIXED: Correct index swapping
+                with col_move:
+                    btn_col1, btn_col2 = st.columns(2)
+                    with btn_col1:
+                        if i > 0:
+                            if st.button("⬆", key=f"up_{sample}", help="Move up", use_container_width=True):
+                                order = st.session_state.sample_order
+                                # FIXED: Swap current item (i) with previous item (i-1)
+                                order[i], order[i-1] = order[i-1], order[i]
+                                st.rerun()
+                    with btn_col2:
+                        if i < len(st.session_state.sample_order) - 1:
+                            if st.button("⬇", key=f"down_{sample}", help="Move down", use_container_width=True):
+                                order = st.session_state.sample_order
+                                # FIXED: Swap current item (i) with next item (i+1)
+                                order[i], order[i+1] = order[i+1], order[i]
+                                st.rerun()
                             
-            # Divider line
-            st.markdown("<hr style='margin: 5px 0; opacity: 0.3;'>", unsafe_allow_html=True)
-            
+                # Divider line
+                st.markdown("<hr style='margin: 5px 0; opacity: 0.3;'>", unsafe_allow_html=True)
+        
         # Update excluded_samples from include flags
         st.session_state.excluded_samples = set([
             s for s, v in st.session_state.sample_mapping.items() 
@@ -1112,7 +1022,8 @@ with tab2:
                 for v in [st.session_state.sample_mapping[s]]
             ])
             st.dataframe(mapping_df, use_container_width=True, hide_index=True)
-        # Run analysis   
+        
+        # Run analysis section remains the same
         st.markdown("---")
         st.subheader("🔬 Run Full Analysis (ΔΔCt + Statistics)")
         
@@ -1186,6 +1097,7 @@ with tab2:
                     st.error("❌ Analysis failed. Check messages above.")
         else:
             st.warning("⚠️ No samples available for analysis.")
+
             
 # ==================== TAB 3: ANALYSIS ====================
 with tab3:
