@@ -792,9 +792,7 @@ with tab1:
             import re
             def natural_sort_key(sample_name):
                 """Extract numbers from sample name for natural sorting"""
-                # Convert to string and extract all numbers
                 parts = re.split(r'(\d+)', str(sample_name))
-                # Convert numeric parts to integers for proper sorting
                 return [int(part) if part.isdigit() else part.lower() for part in parts]
             
             # Get unique samples and sort them naturally
@@ -803,8 +801,14 @@ with tab1:
                 key=natural_sort_key
             )
             
-            # Initialize sample_order with naturally sorted samples
-            st.session_state.sample_order = unique_samples
+            # FIXED: Only initialize sample_order if it doesn't exist or if new samples appeared
+            if 'sample_order' not in st.session_state or st.session_state.sample_order is None:
+                st.session_state.sample_order = unique_samples
+            else:
+                # Add any new samples that weren't in the previous order
+                existing_set = set(st.session_state.sample_order)
+                new_samples = [s for s in unique_samples if s not in existing_set]
+                st.session_state.sample_order.extend(new_samples)
             
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Wells", len(st.session_state.data))
@@ -855,33 +859,24 @@ with tab2:
         st.markdown("---")
         st.markdown("### 🗺️ Sample Condition Mapping")
         
-        # Use sample_order if exists, otherwise get from data with natural sort
-        if 'sample_order' in st.session_state and st.session_state.sample_order:
-            samples = [s for s in st.session_state.sample_order 
-                      if s not in st.session_state.excluded_samples]
-        else:
+        # FIXED: Initialize sample_order properly from data if not exists
+        if 'sample_order' not in st.session_state or not st.session_state.sample_order:
             import re
             def natural_sort_key(sample_name):
                 parts = re.split(r'(\d+)', str(sample_name))
                 return [int(part) if part.isdigit() else part.lower() for part in parts]
             
-            samples = sorted(
-                [s for s in st.session_state.data['Sample'].unique() 
-                 if s not in st.session_state.excluded_samples],
+            st.session_state.sample_order = sorted(
+                st.session_state.data['Sample'].unique(),
                 key=natural_sort_key
             )
-            st.session_state.sample_order = samples
         
         # Group type options
         group_types = ['Negative Control', 'Positive Control', 'Treatment']
         if 'baseline' in config['controls']:
             group_types.insert(0, 'Baseline')
         
-        # Initialize sample_order if not exists
-        if 'sample_order' not in st.session_state:
-            st.session_state.sample_order = samples.copy()
-        
-        # Ensure all samples have mapping
+        # Ensure all samples in sample_order have mapping
         for sample in st.session_state.sample_order:
             if sample not in st.session_state.sample_mapping:
                 st.session_state.sample_mapping[sample] = {
@@ -909,8 +904,11 @@ with tab2:
         </div>
         """, unsafe_allow_html=True)
         
+        # FIXED: Display ALL samples in sample_order (including excluded ones)
+        display_samples = st.session_state.sample_order.copy()
+        
         # Sample rows with improved spacing
-        for i, sample in enumerate(st.session_state.sample_order):
+        for i, sample in enumerate(display_samples):
             # Container for each row
             with st.container():
                 col0, col_order, col1, col2, col3, col_move = st.columns([0.5, 0.8, 1.5, 2.5, 2, 1])
@@ -920,7 +918,7 @@ with tab2:
                     include = st.checkbox(
                         "", 
                         value=st.session_state.sample_mapping[sample].get('include', True),
-                        key=f"include_{sample}",
+                        key=f"include_{sample}_{i}",  # FIXED: Add index to make unique
                         label_visibility="collapsed"
                     )
                     st.session_state.sample_mapping[sample]['include'] = include
@@ -931,14 +929,14 @@ with tab2:
                 
                 # Original sample name (non-editable)
                 with col1:
-                    st.text_input("Original", sample, key=f"orig_{sample}", disabled=True, label_visibility="collapsed")
+                    st.text_input("Original", sample, key=f"orig_{sample}_{i}", disabled=True, label_visibility="collapsed")
                 
                 # Condition name (editable)
                 with col2:
                     cond = st.text_input(
                         "Condition",
                         st.session_state.sample_mapping[sample]['condition'],
-                        key=f"cond_{sample}",
+                        key=f"cond_{sample}_{i}",
                         label_visibility="collapsed",
                         placeholder="Enter condition name..."
                     )
@@ -956,27 +954,27 @@ with tab2:
                         "Group",
                         group_types,
                         index=grp_idx,
-                        key=f"grp_{sample}",
+                        key=f"grp_{sample}_{i}",
                         label_visibility="collapsed"
                     )
                     st.session_state.sample_mapping[sample]['group'] = grp
                 
-                # Move controls - FIXED: Correct index swapping
+                # Move controls - FIXED: Direct list modification
                 with col_move:
                     btn_col1, btn_col2 = st.columns(2)
                     with btn_col1:
                         if i > 0:
-                            if st.button("⬆", key=f"up_{sample}", help="Move up", use_container_width=True):
-                                order = st.session_state.sample_order
-                                # FIXED: Swap current item (i) with previous item (i-1)
-                                order[i], order[i-1] = order[i-1], order[i]
+                            if st.button("⬆", key=f"up_{sample}_{i}", help="Move up", use_container_width=True):
+                                # Swap with previous item
+                                st.session_state.sample_order[i], st.session_state.sample_order[i-1] = \
+                                    st.session_state.sample_order[i-1], st.session_state.sample_order[i]
                                 st.rerun()
                     with btn_col2:
-                        if i < len(st.session_state.sample_order) - 1:
-                            if st.button("⬇", key=f"down_{sample}", help="Move down", use_container_width=True):
-                                order = st.session_state.sample_order
-                                # FIXED: Swap current item (i) with next item (i+1)
-                                order[i], order[i+1] = order[i+1], order[i]
+                        if i < len(display_samples) - 1:
+                            if st.button("⬇", key=f"down_{sample}_{i}", help="Move down", use_container_width=True):
+                                # Swap with next item
+                                st.session_state.sample_order[i], st.session_state.sample_order[i+1] = \
+                                    st.session_state.sample_order[i+1], st.session_state.sample_order[i]
                                 st.rerun()
                             
                 # Divider line
@@ -995,7 +993,8 @@ with tab2:
         col_card1, col_card2, col_card3, col_card4 = st.columns(4)
         
         total_samples = len(st.session_state.sample_order)
-        included = sum(1 for v in st.session_state.sample_mapping.values() if v.get('include', True))
+        included = sum(1 for s in st.session_state.sample_order 
+                      if st.session_state.sample_mapping[s].get('include', True))
         excluded = total_samples - included
         
         with col_card1:
@@ -1005,7 +1004,8 @@ with tab2:
         with col_card3:
             st.metric("Excluded", excluded, delta=None if excluded == 0 else f"+{excluded}")
         with col_card4:
-            groups = set(v['group'] for v in st.session_state.sample_mapping.values() if v.get('include', True))
+            groups = set(v['group'] for v in st.session_state.sample_mapping.values() 
+                        if v.get('include', True))
             st.metric("Groups", len(groups))
         
         # Detailed table view
@@ -1013,17 +1013,16 @@ with tab2:
             mapping_df = pd.DataFrame([
                 {
                     'Order': idx+1,
-                    'Include': '✅' if v.get('include', True) else '❌',
+                    'Include': '✅' if st.session_state.sample_mapping[s].get('include', True) else '❌',
                     'Original': s,
-                    'Condition': v['condition'],
-                    'Group': v['group'],
+                    'Condition': st.session_state.sample_mapping[s]['condition'],
+                    'Group': st.session_state.sample_mapping[s]['group'],
                 }
                 for idx, s in enumerate(st.session_state.sample_order)
-                for v in [st.session_state.sample_mapping[s]]
             ])
             st.dataframe(mapping_df, use_container_width=True, hide_index=True)
         
-        # Run analysis section remains the same
+        # Rest of TAB 2 remains the same (Run analysis section)
         st.markdown("---")
         st.subheader("🔬 Run Full Analysis (ΔΔCt + Statistics)")
         
@@ -1031,7 +1030,7 @@ with tab2:
         condition_list = []
         sample_to_condition = {}
         
-        for sample in st.session_state.get('sample_order', []):
+        for sample in st.session_state.sample_order:
             if sample in st.session_state.sample_mapping:
                 mapping_info = st.session_state.sample_mapping[sample]
                 if mapping_info.get('include', True):
@@ -1040,7 +1039,6 @@ with tab2:
                     sample_to_condition[condition] = sample
         
         if condition_list:
-            # Enhanced layout with clear separation
             st.markdown("#### 📊 Analysis Configuration")
             
             col_info1, col_info2 = st.columns(2)
@@ -1072,7 +1070,6 @@ with tab2:
                 cmp_sample_key = sample_to_condition[cmp_condition]
                 st.caption(f"→ Sample: **{cmp_sample_key}**")
             
-            # Visual summary
             st.markdown("---")
             col_sum1, col_sum2, col_sum3 = st.columns([1, 2, 1])
             with col_sum2:
@@ -1086,7 +1083,6 @@ with tab2:
             
             st.markdown("---")
             
-            # Run button
             if st.button("▶️ Run Full Analysis Now", type="primary", use_container_width=True):
                 ok = AnalysisEngine.run_full_analysis(ref_sample_key, cmp_sample_key)
                 if ok:
@@ -1097,7 +1093,6 @@ with tab2:
                     st.error("❌ Analysis failed. Check messages above.")
         else:
             st.warning("⚠️ No samples available for analysis.")
-
             
 # ==================== TAB 3: ANALYSIS ====================
 with tab3:
